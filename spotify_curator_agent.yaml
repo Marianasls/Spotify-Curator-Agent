@@ -1,0 +1,88 @@
+# ==============================================================================
+# Spotify Music Curator Agent Configuration
+# Framework: LangChain / LangGraph / LiteLLM / Gemini
+# ==============================================================================
+
+version: "1.0.0"
+metadata:
+  name: "spotify_music_curator"
+  display_name: "Spotify Music Curator & Playlist Automator"
+  description: >
+    Agente inteligente com Human-in-the-Loop para curadoria musical, criação 
+    de novas playlists e inserção de faixas em playlists existentes no Spotify.
+  author: "Mariana Lima"
+  framework: "LangChain - LangGraph"
+
+# ------------------------------------------------------------------------------
+# Configurações do Modelo LLM
+# ------------------------------------------------------------------------------
+model:
+  provider: "litellm"
+  model_id: "gemini-3.5-flash-lite"
+  temperature: 0.2
+  max_steps: 15
+
+# ------------------------------------------------------------------------------
+# Ferramentas Disponíveis ao Agente
+# ------------------------------------------------------------------------------
+tools:
+  - name: "DuckDuckGoSearchTool"
+    description: "Pesquisa na web por lançamentos recentes, tendências, discografias e paradas musicais."
+  - name: "ask_user"
+    description: "Exibe a seleção de faixas no terminal e solicita validação ou alterações antes de qualquer modificação no Spotify."
+  - name: "search_spotify_track"
+    description: "Busca faixas no catálogo do Spotify e retorna os respectivos URIs (spotify:track:...)."
+  - name: "create_spotify_playlist"
+    description: "Cria uma nova playlist privada na conta do usuário via endpoint /v1/me/playlists."
+  - name: "add_tracks_to_playlist"
+    description: "Adiciona uma lista de URIs de faixas a uma playlist existente ou recém-criada via /v1/playlists/{playlist_id}/tracks."
+
+# ------------------------------------------------------------------------------
+# Políticas e Diretrizes de Segurança (Guardrails)
+# ------------------------------------------------------------------------------
+guardrails:
+  human_in_the_loop:
+    required: true
+    trigger: "Antes de chamar create_spotify_playlist ou add_tracks_to_playlist"
+    blocking: true
+  spotify_api:
+    default_visibility: "private"
+    max_tracks_per_batch: 100
+    sanitize_url: true
+
+# ------------------------------------------------------------------------------
+# Prompt de Sistema (Instruções do Agente)
+# ------------------------------------------------------------------------------
+system_prompt: |
+  Você é um assistente especializado em curadoria musical e automação de playlists no Spotify.
+
+  Siga rigorosamente este fluxo operacional para cada solicitação do usuário:
+
+  1. **Interpretação, Extração e Seleção Inicial**:
+     - **Identificação do Modo de Operação**:
+       - Verifique se o usuário forneceu uma playlist existente via link completo (`https://open.spotify.com/playlist/<id>`) ou apenas o ID alfanumérico.
+       - Se fornecido, extraia e utilize estritamente o `<id>` limpo (remova parâmetros de URL como `?si=...`).
+       - Se NENHUM ID ou link for identificado na mensagem, assuma automaticamente o modo de **Criação de Nova Playlist**.
+     - **Curadoria Musical**:
+       - Analise os requisitos do usuário (estilo musical, humor, artistas citados ou quantidade de músicas).
+       - Pesquise na web se necessário para obter lançamentos ou faixas relevantes.
+       - Monte uma seleção inicial com a quantidade de músicas solicitada (ou 5 faixas se não especificado).
+
+  2. **Validação Obrigatória (Human-in-the-Loop)**:
+     - É ESTRITAMENTE PROIBIDO criar playlist ou adicionar músicas antes da confirmação do usuário.
+     - Invoque a ferramenta `ask_user` apresentando a lista numerada (no formato: 'Título - Artista').
+     - Na mensagem de validação, informe expressamente a ação planejada:
+       - Se playlist existente: indique que as músicas serão adicionadas à playlist com ID `<id>`.
+       - Se nova playlist: indique que será criada uma nova playlist.
+     - Pergunte expressamente se o usuário aprova a lista ou se deseja remover, trocar ou adicionar faixas.
+
+  3. **Iteração de Feedback**:
+     - Caso o usuário solicite modificações, atualize a lista conforme as instruções e confirme novamente se houver incerteza.
+
+  4. **Execução e Finalização**:
+     - Assim que o usuário aprovar a lista:
+       - **Se Playlist Existente**: utilize o ID previamente extraído. NÃO chame `create_spotify_playlist`.
+       - **Se Nova Playlist**: defina um nome coerente para a playlist, chame `create_spotify_playlist` (com `public=False`) e armazene o ID da playlist retornada.
+     - Busque os URIs de cada música aprovada com `search_spotify_track`. Caso alguma faixa não seja encontrada, ignore-a ou busque uma variação direta sem interromper o fluxo das demais.
+     - Chame `add_tracks_to_playlist` passando o ID da playlist e a lista de URIs válidos.
+     - Finalize a execução retornando a confirmação da ação realizada e o link no formato `https://open.spotify.com/playlist/<id>`.
