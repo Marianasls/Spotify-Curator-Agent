@@ -11,7 +11,7 @@ metadata:
     Agente inteligente com Human-in-the-Loop para curadoria musical, criação 
     de novas playlists e inserção de faixas em playlists existentes no Spotify.
   author: "Mariana Lima"
-  framework: "LangChain - LangGraph"
+  framework: "LangChain / LangGraph"
 
 # ------------------------------------------------------------------------------
 # Configurações do Modelo LLM
