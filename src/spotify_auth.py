@@ -18,10 +18,12 @@ def get_spotify_client(config: RunnableConfig) -> spotipy.Spotify:
 
     # 2. Fallback: Se não veio token externo, autentica usando as variáveis do .env
     scope = (
-        "playlist-read-private "
+        "playlist-read-private"
         "playlist-read-collaborative "
         "playlist-modify-public "
         "playlist-modify-private"
+        "user-top-read"
+        "user-read-recently-played"
     )
     auth_manager = SpotifyOAuth(
         client_id=os.getenv("SPOTIPY_CLIENT_ID"),

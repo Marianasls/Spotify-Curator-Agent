@@ -6,4 +6,9 @@ spotipy>=2.24.0
 duckduckgo-search>=6.0.0
 pyyaml>=6.0
 python-dotenv>=1.0.0
-ddgs==9.16.0
+ddgs>=9.16.0
+psycopg[binary,pool]>=3.3.6
+streamlit>=1.66.0
+
+# Observabilidade (langfuse)
+langfuse==5.0.2
