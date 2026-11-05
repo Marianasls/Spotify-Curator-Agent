@@ -48,7 +48,7 @@ def get_spotify_oauth() -> SpotifyOAuth:
     return SpotifyOAuth(
         client_id=os.getenv("SPOTIPY_CLIENT_ID"),
         client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
-        redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI", "http://localhost:8501"),
+        redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI", "http://localhost:8501/callback"),
         scope=scope,
         open_browser=False,
         cache_handler=spotipy.MemoryCacheHandler(),
@@ -71,6 +71,10 @@ def init_session_state():
         st.session_state.playlist_url = None
     if "free_uses_count" not in st.session_state:
         st.session_state.free_uses_count = 0
+    if "awaiting_approval" not in st.session_state:
+        st.session_state.awaiting_approval = False
+    if "editing_changes" not in st.session_state:
+        st.session_state.editing_changes = False
 
 
 init_session_state()
@@ -118,7 +122,14 @@ with st.sidebar:
         st.warning("Conecte sua conta para criar e editar playlists.")
         oauth = get_spotify_oauth()
         auth_url = oauth.get_authorize_url()
-        st.link_button("🟢 Conectar com Spotify", auth_url, use_container_width=True)
+        st.markdown(
+            f'<a href="{auth_url}" target="_self" style="'
+            'display: inline-block; width: 100%; text-align: center; '
+            'padding: 0.5rem 1rem; background-color: #1DB954; color: #FFFFFF; '
+            'text-decoration: none; border-radius: 0.5rem; font-weight: 600;">'
+            '🟢 Conectar com Spotify</a>',
+            unsafe_allow_html=True,
+        )
 
     st.divider()
 
@@ -151,6 +162,8 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.proposed_tracks = []
         st.session_state.playlist_url = None
+        st.session_state.awaiting_approval = False
+        st.session_state.editing_changes = False
         st.rerun()
 
 
@@ -177,11 +190,42 @@ for msg in st.session_state.messages:
                 f"APIs: {m['external_seconds']}s) | 🪙 Tokens: {m['total_tokens']}"
             )
 
-# Captura a entrada do usuário no chat
-user_prompt = st.chat_input("Descreva a playlist que deseja ou responda se aprova a sugestão...")
+# 6. Controles de Aprovação (Human-in-the-Loop) acima do campo de texto
+pending_action_prompt = None
 
-if user_prompt:
-    clean_prompt = user_prompt.strip()
+if st.session_state.awaiting_approval:
+    st.markdown("---")
+    if not st.session_state.editing_changes:
+        st.info("🔔 **Aprovação pendente:** Escolha uma das opções abaixo para prosseguir.")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Confirmar Playlist", type="primary", use_container_width=True):
+                pending_action_prompt = "Sim, aprovo a playlist."
+        with col2:
+            if st.button("✏️ Solicitar Alterações", use_container_width=True):
+                st.session_state.editing_changes = True
+                st.rerun()
+    else:
+        st.warning("✏️ **Modo de edição ativo:** Digite abaixo quais alterações deseja fazer na seleção.")
+
+# Bloqueia o campo de texto enquanto aguarda o clique em um dos botões de decisão
+chat_disabled = st.session_state.awaiting_approval and not st.session_state.editing_changes
+chat_placeholder = (
+    "Selecione 'Confirmar Playlist' ou 'Solicitar Alterações' nos botões acima..."
+    if chat_disabled
+    else (
+        "Descreva quais alterações deseja fazer na playlist..."
+        if st.session_state.editing_changes
+        else "Descreva a playlist que deseja criar ou envie o link de uma playlist existente..."
+    )
+)
+
+# Captura a entrada do usuário no chat (ou a confirmação disparada pelo botão)
+user_input = st.chat_input(chat_placeholder, disabled=chat_disabled)
+active_prompt = pending_action_prompt or user_input
+
+if active_prompt:
+    clean_prompt = active_prompt.strip()
     if not clean_prompt:
         st.warning("Por favor, digite uma mensagem válida.")
         st.stop()
@@ -219,6 +263,13 @@ if user_prompt:
                 st.session_state.proposed_tracks = result.get("proposed_tracks", [])
                 st.session_state.playlist_url = result.get("playlist_url")
 
+                # Verifica se a resposta exige aprovação do usuário (lista proposta e playlist ainda não salva)
+                needs_approval = bool(
+                    st.session_state.proposed_tracks and not st.session_state.playlist_url
+                )
+                st.session_state.awaiting_approval = needs_approval
+                st.session_state.editing_changes = False
+
                 # Contabiliza o uso gratuito caso não esteja usando chave própria
                 if not using_custom_key:
                     st.session_state.free_uses_count += 1
@@ -238,7 +289,7 @@ if user_prompt:
                     "metrics": metrics,
                 })
 
-                # Atualiza a barra lateral para refletir o contador e as faixas propostas
+                # Atualiza a interface para renderizar os botões de aprovação ou o link final
                 st.rerun()
 
             except Exception as e:
