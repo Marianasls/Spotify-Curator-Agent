@@ -18,11 +18,11 @@ def get_spotify_client(config: RunnableConfig) -> spotipy.Spotify:
 
     # 2. Fallback: Se não veio token externo, autentica usando as variáveis do .env
     scope = (
-        "playlist-read-private"
+        "playlist-read-private "
         "playlist-read-collaborative "
         "playlist-modify-public "
-        "playlist-modify-private"
-        "user-top-read"
+        "playlist-modify-private "
+        "user-top-read "
         "user-read-recently-played"
     )
     auth_manager = SpotifyOAuth(
@@ -30,6 +30,6 @@ def get_spotify_client(config: RunnableConfig) -> spotipy.Spotify:
         client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
         redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI", "http://localhost:8888/callback"),
         scope=scope,
-        open_browser=True,
+        open_browser=False,
     )
     return spotipy.Spotify(auth_manager=auth_manager)
