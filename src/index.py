@@ -1,3 +1,6 @@
+"""
+Script para teste local do agente.
+"""
 from spotify_agent_service import SpotifyCuratorGraphService
 import os
 import sys

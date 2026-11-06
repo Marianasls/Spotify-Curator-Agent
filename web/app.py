@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+from datetime import datetime
 import uuid
 import streamlit as st
 import spotipy
@@ -24,6 +25,7 @@ st.set_page_config(
 )
 
 MAX_FREE_USES = int(os.getenv("MAX_FREE_USES", 3))
+
 
 # 2. Inicialização de Recursos e Estado da Sessão (Session State)
 @st.cache_resource
@@ -56,6 +58,20 @@ def get_spotify_oauth() -> SpotifyOAuth:
     )
 
 
+def format_datetime(dt_val) -> str:
+    """Formata objetos datetime ou strings ISO para exibição amigável (DD/MM/YYYY HH:MM)."""
+    if not dt_val:
+        return ""
+    if isinstance(dt_val, str):
+        try:
+            dt_val = datetime.fromisoformat(dt_val.replace("Z", "+00:00"))
+        except ValueError:
+            return dt_val
+    if isinstance(dt_val, datetime):
+        return dt_val.strftime("%d/%m/%Y %H:%M")
+    return str(dt_val)
+
+
 def init_session_state():
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
@@ -81,6 +97,53 @@ init_session_state()
 agent_service = get_agent_service()
 
 
+# Modal para exibir as playlists criadas pelo usuário
+@st.dialog("🎵 Minhas Playlists Criadas", width="large")
+def show_user_playlists_modal(user_id: str):
+    playlists = agent_service.list_user_playlists(user_id)
+    if not playlists:
+        st.info("Você ainda não criou nenhuma playlist com o agente.")
+        return
+
+    for idx, pl in enumerate(playlists, 1):
+        created_str = format_datetime(pl.get("created_at"))
+        col_info, col_action = st.columns([3, 1])
+        with col_info:
+            st.markdown(f"**{idx}. {pl.get('playlist_name')}**")
+            st.caption(f"📅 Criada em: {created_str}")
+        with col_action:
+            st.link_button(
+                "Abrir no Spotify",
+                pl.get("playlist_url", "#"),
+                use_container_width=True,
+            )
+        st.divider()
+
+
+def load_conversation_into_state(user_id: str, target_session_id: str):
+    """Carrega o conteúdo completo de uma conversa salva no banco para a sessão do Streamlit."""
+    details = agent_service.get_conversation_details(user_id, target_session_id)
+    if not details:
+        st.warning("Não foi possível carregar a conversa selecionada.")
+        return
+
+    st.session_state.session_id = details["session_id"]
+    st.session_state.messages = [
+        {
+            "role": m["role"],
+            "content": m["content"],
+            "metrics": m.get("metrics"),
+        }
+        for m in details.get("messages", [])
+    ]
+    st.session_state.proposed_tracks = details.get("proposed_tracks") or []
+    st.session_state.playlist_url = details.get("playlist_url")
+    st.session_state.awaiting_approval = bool(
+        details.get("awaiting_approval") and not details.get("playlist_url")
+    )
+    st.session_state.editing_changes = False
+
+
 # 3. Captura do Callback OAuth2 do Spotify via Query Params
 if not st.session_state.spotify_token and "code" in st.query_params:
     auth_code = st.query_params["code"]
@@ -90,8 +153,7 @@ if not st.session_state.spotify_token and "code" in st.query_params:
 
         if not access_token:
             raise ValueError("Não foi possível obter o access_token a partir do código informado.")
-            
-        # Busca os dados do usuário logado no Spotify
+
         sp = spotipy.Spotify(auth=access_token)
         profile = sp.current_user()
 
@@ -107,14 +169,19 @@ if not st.session_state.spotify_token and "code" in st.query_params:
         st.query_params.clear()
 
 
-# 4. Barra Lateral (Autenticação, BYOK e Estado da Curadoria)
+# 4. Barra Lateral (Autenticação, BYOK, Histórico de Conversas e Playlists)
 with st.sidebar:
     st.title("🎧 Configurações")
 
     # --- Seção 1: Conta Spotify ---
     st.subheader("1. Conta Spotify")
     if st.session_state.spotify_token and st.session_state.user_profile:
+        user_id = st.session_state.user_profile["id"]
         st.success(f"Conectado como: **{st.session_state.user_profile['name']}**")
+
+        if st.button("📂 Ver Playlists Criadas", use_container_width=True):
+            show_user_playlists_modal(user_id)
+
         if st.button("Sair / Trocar Conta", use_container_width=True):
             st.session_state.clear()
             st.rerun()
@@ -147,7 +214,16 @@ with st.sidebar:
 
     st.divider()
 
-    # --- Seção 3: Prévia da Curadoria e Ações de Sessão ---
+    # --- Seção 3: Ações de Sessão e Prévia da Curadoria ---
+    if st.button("➕ Nova Conversa / Playlist", type="primary", use_container_width=True):
+        st.session_state.session_id = str(uuid.uuid4())
+        st.session_state.messages = []
+        st.session_state.proposed_tracks = []
+        st.session_state.playlist_url = None
+        st.session_state.awaiting_approval = False
+        st.session_state.editing_changes = False
+        st.rerun()
+
     if st.session_state.proposed_tracks:
         st.subheader("🎵 Faixas em Validação")
         for idx, track in enumerate(st.session_state.proposed_tracks, 1):
@@ -157,14 +233,33 @@ with st.sidebar:
         st.subheader("✅ Playlist Salva")
         st.link_button("Abrir Playlist no Spotify", st.session_state.playlist_url, use_container_width=True)
 
-    if st.button("🔄 Nova Conversa / Playlist", use_container_width=True):
-        st.session_state.session_id = str(uuid.uuid4())
-        st.session_state.messages = []
-        st.session_state.proposed_tracks = []
-        st.session_state.playlist_url = None
-        st.session_state.awaiting_approval = False
-        st.session_state.editing_changes = False
-        st.rerun()
+    # --- Seção 4: Histórico de Conversas Salvas ---
+    if st.session_state.spotify_token and st.session_state.user_profile:
+        st.divider()
+        st.subheader("💬 Histórico de Conversas")
+        conversations = agent_service.list_user_conversations(st.session_state.user_profile["id"])
+
+        if not conversations:
+            st.caption("Nenhuma conversa salva ainda.")
+        else:
+            for conv in conversations:
+                is_active = conv["session_id"] == st.session_state.session_id
+                status_icon = "✅" if conv.get("playlist_url") else ("⏳" if conv.get("awaiting_approval") else "💬")
+                btn_label = f"{status_icon} {conv['title']}"
+                updated_str = format_datetime(conv.get("updated_at"))
+
+                if st.button(
+                    btn_label,
+                    key=f"conv_{conv['session_id']}",
+                    type="secondary" if not is_active else "primary",
+                    use_container_width=True,
+                    help=f"Última atualização: {updated_str}\n\n{conv.get('summary', '')}",
+                ):
+                    load_conversation_into_state(
+                        st.session_state.user_profile["id"],
+                        conv["session_id"],
+                    )
+                    st.rerun()
 
 
 # 5. Área Principal de Chat
@@ -208,7 +303,6 @@ if st.session_state.awaiting_approval:
     else:
         st.warning("✏️ **Modo de edição ativo:** Digite abaixo quais alterações deseja fazer na seleção.")
 
-# Bloqueia o campo de texto enquanto aguarda o clique em um dos botões de decisão
 chat_disabled = st.session_state.awaiting_approval and not st.session_state.editing_changes
 chat_placeholder = (
     "Selecione 'Confirmar Playlist' ou 'Solicitar Alterações' nos botões acima..."
@@ -220,7 +314,6 @@ chat_placeholder = (
     )
 )
 
-# Captura a entrada do usuário no chat (ou a confirmação disparada pelo botão)
 user_input = st.chat_input(chat_placeholder, disabled=chat_disabled)
 active_prompt = pending_action_prompt or user_input
 
@@ -230,7 +323,6 @@ if active_prompt:
         st.warning("Por favor, digite uma mensagem válida.")
         st.stop()
 
-    # Verifica limite da cota de demonstração caso o usuário não tenha informado chave própria
     using_custom_key = bool(custom_gemini_key and custom_gemini_key.strip())
     if not using_custom_key and st.session_state.free_uses_count >= MAX_FREE_USES:
         st.error(
@@ -239,12 +331,10 @@ if active_prompt:
         )
         st.stop()
 
-    # 1. Exibe e salva a mensagem do usuário na interface
     st.session_state.messages.append({"role": "user", "content": clean_prompt})
     with st.chat_message("user"):
         st.markdown(clean_prompt)
 
-    # 2. Invoca o SpotifyCuratorGraphService
     with st.chat_message("assistant"):
         with st.spinner("O agente está processando sua solicitação..."):
             try:
@@ -259,22 +349,18 @@ if active_prompt:
                 reply_text = result["reply"]
                 metrics = result.get("metrics")
 
-                # Atualiza o estado lateral com as músicas propostas e o link final
                 st.session_state.proposed_tracks = result.get("proposed_tracks", [])
                 st.session_state.playlist_url = result.get("playlist_url")
 
-                # Verifica se a resposta exige aprovação do usuário (lista proposta e playlist ainda não salva)
                 needs_approval = bool(
                     st.session_state.proposed_tracks and not st.session_state.playlist_url
                 )
                 st.session_state.awaiting_approval = needs_approval
                 st.session_state.editing_changes = False
 
-                # Contabiliza o uso gratuito caso não esteja usando chave própria
                 if not using_custom_key:
                     st.session_state.free_uses_count += 1
 
-                # Exibe a resposta do agente e a telemetria
                 st.markdown(reply_text)
                 if metrics:
                     st.caption(
@@ -282,14 +368,12 @@ if active_prompt:
                         f"APIs: {metrics['external_seconds']}s) | 🪙 Tokens: {metrics['total_tokens']}"
                     )
 
-                # Salva a resposta no histórico do Streamlit
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": reply_text,
                     "metrics": metrics,
                 })
 
-                # Atualiza a interface para renderizar os botões de aprovação ou o link final
                 st.rerun()
 
             except Exception as e:

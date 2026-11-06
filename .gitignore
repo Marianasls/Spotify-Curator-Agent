@@ -16,3 +16,4 @@ htmlcov/
 src.zip
 .agents
 .claude
+backup/
